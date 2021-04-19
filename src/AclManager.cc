@@ -6,6 +6,20 @@
 #include <runos/core/logging.hpp>
 #include <oxm/openflow_basic.hh>
 #include <boost/endian/arithmetic.hpp>
+#include <tins/icmp.h>
+#include <tins/ip.h>
+#include <tins/ethernetII.h>
+#include "PacketParser.hpp"
+#include "oxm/openflow_basic.hh"
+
+
+#include <map>
+#include <string>
+#include <vector>
+
+using std::map;
+using std::string;
+using std::vector;
 
 namespace of13 = fluid_msg::of13;
 
@@ -82,9 +96,22 @@ void AclManager::set_rule(SwitchPtr ptr, uint16_t value, bool flag) {
     sender->send(ptr->dpid(), ofm);
 }
 
-/* Constructor with no actions
- */
-AclManager::AclManager() {}
+void AclManager::send_icmp_error(Packet & pkt, uint64_t dpid) {
+    auto mac_src = pkt.load(oxm::eth_src());
+    auto ip_src = pkt.load(oxm::ipv4_src());
+    auto ip_dst = pkt.load(oxm::ipv4_dst());
+    auto in_port = pkt.load(oxm::in_port());
+
+    Tins::EthernetII eth = Tins::EthernetII(Tins::HWAddress<6>((uint8_t *) & mac_src)) / 
+    Tins::IP(Tins::IPv4Address(htonl(ip_src))) / Tins::ICMP(Tins::ICMP::Flags::DEST_UNREACHABLE);
+
+    of13::PacketOut po;
+    auto bytes = eth.serialize();
+    po.data(bytes.data(), bytes.size());
+    po.add_action(new of13::OutputAction(in_port, 0));
+    po.in_port(of13::OFPP_CONTROLLER);
+    sender->send(dpid, po);
+}
 
 /* init method is called, when controller launches application
  * Its first parameter "Loader" allows to get pointers to other
@@ -94,7 +121,7 @@ AclManager::AclManager() {}
  */
 void AclManager::init(Loader *loader, const Config &config) {
 
-    LOG(INFO) << "AclManager: initialization is starting";
+    LOG(INFO) << "Initialization is starting";
 
     /* Application Controller is required to register
      * our message handler, which is in class implementation
@@ -108,15 +135,15 @@ void AclManager::init(Loader *loader, const Config &config) {
      */
     controller = Controller::get(loader);
 
-    controller->register_handler([=](of13::PacketIn& pi, OFConnectionPtr conn) mutable -> bool
+    handler = controller->register_handler(
+        [=](of13::PacketIn& pi, OFConnectionPtr conn) mutable -> bool
     {
-        LOG(WARNING) << "loooooooooooooooooool";
+        LOG(INFO) << "We received PacketIn";
         /* Check that connection is still valid (not null).
          */
         if (not conn) {
             return false;
         }
-        LOG(WARNING) << "keeeeeeeeeeeeeeeeeeeeeeek";
         /* Check that PacketIn was received with the rule,
          * that has alias of our application.
          */
@@ -124,12 +151,29 @@ void AclManager::init(Loader *loader, const Config &config) {
         if (pi_cookie != COOKIE) {
             return false;
         }
-        LOG(INFO) << "AclManager: processing is starting";
+        LOG(INFO) << "Processing is starting";
+        PacketParser pp(pi);
+        Packet& pkt(pp);
 
-        LOG(INFO) << "AclManager: processing finished";
+        bool res = false;
+        auto ip_src = pkt.load(oxm::ipv4_src());
+        auto ip_dst = pkt.load(oxm::ipv4_dst());
+        auto dpid = conn->dpid();
 
-        return false;
-    }, -100);
+        if (rules.find(ip_src) != rules.end()) {
+            for (auto & addr: rules[ip_src]) {
+                if (ip_dst == addr) {
+                    res = true;
+                    send_icmp_error(pkt, dpid);
+                    break;
+                }
+            }
+
+        }
+
+        LOG(INFO) << "Processing finished";
+        return res;
+    }, 10);
 
     /* Application SwitchManager is required to connect to signal (QT),
      * that announces the new switch in SDN topology.
@@ -141,19 +185,37 @@ void AclManager::init(Loader *loader, const Config &config) {
      * transmission to the SDN switches.
      */
     sender = OFMsgSender::get(loader);
-
     /* Read the config file and extract parameters for our application.
      */
-    auto conf = config_cd(config, "acl-manager");
+    auto restricting_rules = config_cd(config_cd(config, "acl-manager"), "restricting_rules");
+    for (auto &rr: restricting_rules) {
 
-    LOG(INFO) << "AclManager: initialization finished";
+        uint32_t src_addr = htonl(Tins::IPv4Address(rr.first));
+        rules[src_addr] = vector<uint32_t>();
+        vector<Json> dst_addresses = rr.second.array_items();
+
+        for (auto &dst_address: dst_addresses) {
+            rules[src_addr].push_back(htonl(Tins::IPv4Address(dst_address.string_value())));
+        }
+    }
+
+    LOG(INFO) << "Rules:";
+
+    for (auto &rr: rules) {
+        LOG(INFO) << rr.first << ": ";
+        for (auto &s: rr.second) {
+            LOG(INFO) << s << " ";
+        }
+    }
+
+    LOG(INFO) << "Initialization finished";
 }
 
 /* Method that is called on all new SDN switches
  */
 void AclManager::onSwitchUp(SwitchPtr ptr) {
     default_rules(ptr);
-    LOG(INFO) << "AclManager: default rules are installed";
+    LOG(INFO) << "Default rules are installed";
 }
 
 }
