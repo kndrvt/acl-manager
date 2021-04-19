@@ -24,9 +24,12 @@ namespace runos {
 
         int xid = 21;
         unordered_map<uint32_t, vector<uint32_t>> rules;
+
         void default_rules(SwitchPtr ptr);
+
         void set_rule(SwitchPtr ptr, uint16_t value, bool flag);
-        void send_icmp_error(Packet & pkt, uint64_t dpid);
+
+        void send_icmp_error(Packet &pkt, uint64_t dpid);
 
         OFMessageHandlerPtr handler;
         Controller *controller;
