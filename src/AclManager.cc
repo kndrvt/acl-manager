@@ -91,15 +91,27 @@ namespace runos {
         sender->send(ptr->dpid(), ofm);
     }
 
-    void AclManager::send_icmp_error(Packet &pkt, uint64_t dpid) {
+    void AclManager::send_icmp_error(of13::PacketIn &pi, uint64_t dpid) {
+        PacketParser pp(pi);
+        Packet &pkt(pp);
+
         auto mac_src = pkt.load(oxm::eth_src());
         auto ip_src = pkt.load(oxm::ipv4_src());
         auto ip_dst = pkt.load(oxm::ipv4_dst());
         auto in_port = pkt.load(oxm::in_port());
 
-        Tins::EthernetII eth = Tins::EthernetII(Tins::HWAddress<6>((uint8_t *) &mac_src)) /
-                               Tins::IP(Tins::IPv4Address(htonl(ip_src))) /
-                               Tins::ICMP(Tins::ICMP::Flags::DEST_UNREACHABLE);
+        /* We need IP header for ICMP
+         */
+        Tins::EthernetII eth(static_cast<uint8_t *>(pi.data()), static_cast<uint32_t>(pi.data_len()));
+        Tins::IP *ip = eth.find_pdu<Tins::IP>();
+
+        /* Create ICMP packet for PacketOut
+         */ 
+        Tins::ICMP icmp(Tins::ICMP::Flags::DEST_UNREACHABLE);
+        icmp.code(13);
+        eth = Tins::EthernetII(Tins::HWAddress<6>((uint8_t *) &mac_src)) /
+                               Tins::IP(Tins::IPv4Address(htonl(ip_dst)), Tins::IPv4Address(htonl(ip_src))) /
+                               icmp / *ip;
 
         of13::PacketOut po;
         auto bytes = eth.serialize();
@@ -132,43 +144,48 @@ namespace runos {
         controller = Controller::get(loader);
 
         handler = controller->register_handler(
-                [=](of13::PacketIn &pi, OFConnectionPtr conn) mutable -> bool {
-                    LOG(INFO) << "We received PacketIn";
-                    /* Check that connection is still valid (not null).
-                     */
-                    if (not conn) {
-                        return false;
+        [=](of13::PacketIn &pi, OFConnectionPtr conn) mutable -> bool {
+            /* Check that connection is still valid (not null).
+                */
+            if (!conn) {
+                return false;
+            }
+            /* Check that PacketIn was received with the rule,
+                * that has alias of our application.
+                */
+            uint64_t pi_cookie = pi.cookie();
+            if (pi_cookie != COOKIE) {
+                return false;
+            }
+            LOG(INFO) << "Processing is starting";
+            PacketParser pp(pi);
+            Packet &pkt(pp);
+
+            bool res = false;
+            auto ip_src = pkt.load(oxm::ipv4_src());
+            auto ip_dst = pkt.load(oxm::ipv4_dst());
+            auto dpid = conn->dpid();
+
+            /* Search src IP address in rules 
+             */
+            if (rules.find(ip_src) != rules.end()) {
+                /* Check dst IP addresses for src IP address 
+                 */
+                for (auto &addr: rules[ip_src]) {
+                    if (ip_dst == addr) {
+                        /* Don't send PacketIn to learning-switch and send PacketOut with ICMP error
+                         */ 
+                        res = true;
+                        send_icmp_error(pi, dpid);
+                        break;
                     }
-                    /* Check that PacketIn was received with the rule,
-                     * that has alias of our application.
-                     */
-                    uint64_t pi_cookie = pi.cookie();
-                    if (pi_cookie != COOKIE) {
-                        return false;
-                    }
-                    LOG(INFO) << "Processing is starting";
-                    PacketParser pp(pi);
-                    Packet &pkt(pp);
+                }
 
-                    bool res = false;
-                    auto ip_src = pkt.load(oxm::ipv4_src());
-                    auto ip_dst = pkt.load(oxm::ipv4_dst());
-                    auto dpid = conn->dpid();
+            }
 
-                    if (rules.find(ip_src) != rules.end()) {
-                        for (auto &addr: rules[ip_src]) {
-                            if (ip_dst == addr) {
-                                res = true;
-                                send_icmp_error(pkt, dpid);
-                                break;
-                            }
-                        }
-
-                    }
-
-                    LOG(INFO) << "Processing finished";
-                    return res;
-                }, 10);
+            LOG(INFO) << "Processing finished";
+            return res;
+        }, -10000);
 
         /* Application SwitchManager is required to connect to signal (QT),
          * that announces the new switch in SDN topology.
@@ -191,15 +208,6 @@ namespace runos {
 
             for (auto &dst_address: dst_addresses) {
                 rules[src_addr].push_back(htonl(Tins::IPv4Address(dst_address.string_value())));
-            }
-        }
-
-        LOG(INFO) << "Rules:";
-
-        for (auto &rr: rules) {
-            LOG(INFO) << rr.first << ": ";
-            for (auto &s: rr.second) {
-                LOG(INFO) << s << " ";
             }
         }
 

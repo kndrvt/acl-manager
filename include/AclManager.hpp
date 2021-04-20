@@ -29,7 +29,7 @@ namespace runos {
 
         void set_rule(SwitchPtr ptr, uint16_t value, bool flag);
 
-        void send_icmp_error(Packet &pkt, uint64_t dpid);
+        void send_icmp_error(of13::PacketIn &pi, uint64_t dpid);
 
         OFMessageHandlerPtr handler;
         Controller *controller;

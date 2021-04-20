@@ -12,10 +12,11 @@
     cd /runos/src/apps
     ```
 
-3. Get application sources:
+3. Get applications sources:
 
     ```bash
     git clone http://<application repository path>/acl-manager.git
+    git clone http://<application repository path>/l2-learning-switch.git
     ```
 
 4. Change default settings in the settings.json to the ones you need:
@@ -52,7 +53,8 @@
 	```bash
 	cd runos
 	nix-shell
-	./build/runos -c ../runos-settings.json
+    cd build
+	./runos -c ../runos-settings.json
 	```
 
 2. Start a network topology in Mininet:
