@@ -110,7 +110,7 @@ namespace runos {
         Tins::ICMP icmp(Tins::ICMP::Flags::DEST_UNREACHABLE);
         icmp.code(13);
         eth = Tins::EthernetII(Tins::HWAddress<6>((uint8_t *) &mac_src)) /
-                               Tins::IP(Tins::IPv4Address(htonl(ip_dst)), Tins::IPv4Address(htonl(ip_src))) /
+                               Tins::IP(Tins::IPv4Address(htonl(ip_src)), Tins::IPv4Address(htonl(ip_dst))) /
                                icmp / *ip;
 
         of13::PacketOut po;
